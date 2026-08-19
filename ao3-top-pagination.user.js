@@ -2,11 +2,12 @@
 // @name         AO3 Top Pagination
 // @namespace    http://tampermonkey.net/
 // @version      2.2
-// @description  Adds AO3's existing pagination above the works list.
+// @description  Adds AO3's existing pagination controls above search results and works lists.
 // @author       GPT-5.6 Luna
 // @match        https://archiveofourown.org/tags/*/works*
 // @match        https://archiveofourown.org/tags/*/works/*
 // @match        https://archiveofourown.org/works/search*
+// @match        https://archiveofourown.org/tags/search*
 // @grant        none
 // @run-at       document-idle
 // ==/UserScript==
@@ -21,32 +22,49 @@
     let updating = false;
 
     // =========================================================
-    // FIND WORK LIST
+    // FIND THE RESULTS LIST
     // =========================================================
 
-    function findWorksList() {
-        return document.querySelector(
+    function findResultsList() {
+        // Work listings
+        const worksList = document.querySelector(
             'ol.work.index.group'
         );
+
+        if (worksList) {
+            return worksList;
+        }
+
+        // Tag search results
+        const tagList = document.querySelector(
+            'ol.tag.index.group'
+        );
+
+        if (tagList) {
+            return tagList;
+        }
+
+        return null;
     }
 
     // =========================================================
     // FIND AO3'S ORIGINAL PAGINATION
     // =========================================================
 
-    function findOriginalPagination(worksList) {
-        if (!worksList) {
+    function findOriginalPagination(resultsList) {
+        if (!resultsList) {
             return null;
         }
 
-        const paginations = Array.from(
-            document.querySelectorAll(
-                'ol.pagination.actions[aria-label="Pagination"]'
-            )
+        const paginations = document.querySelectorAll(
+            'ol.pagination.actions[aria-label="Pagination"]'
         );
 
+        /*
+         * Find the first genuine AO3 pagination that appears
+         * after the results list.
+         */
         for (const pagination of paginations) {
-
             // Never use our own copied pagination.
             if (
                 pagination.closest(
@@ -57,17 +75,17 @@
             }
 
             const position =
-                worksList.compareDocumentPosition(
+                resultsList.compareDocumentPosition(
                     pagination
                 );
 
-            const isAfterWorks =
+            const isAfterResults =
                 Boolean(
                     position &
                     Node.DOCUMENT_POSITION_FOLLOWING
                 );
 
-            if (isAfterWorks) {
+            if (isAfterResults) {
                 return pagination;
             }
         }
@@ -96,7 +114,7 @@
 
     function createTopPagination(
         originalPagination,
-        worksList
+        resultsList
     ) {
         const wrapper =
             document.createElement('div');
@@ -118,7 +136,10 @@
 
         /*
          * Clone AO3's real pagination.
-         * This preserves AO3's existing links and URLs.
+         *
+         * This preserves AO3's existing links,
+         * page numbers, Previous/Next controls,
+         * and search parameters.
          */
         const clone =
             originalPagination.cloneNode(true);
@@ -129,7 +150,7 @@
         );
 
         /*
-         * Avoid duplicate IDs inside the cloned markup.
+         * Avoid duplicate IDs inside the copied markup.
          */
         clone
             .querySelectorAll('[id]')
@@ -138,7 +159,7 @@
             });
 
         /*
-         * Give the copied navigation a distinct
+         * Give the copied navigation its own
          * accessible label.
          */
         clone.setAttribute(
@@ -149,12 +170,12 @@
         wrapper.appendChild(clone);
 
         /*
-         * Put the copied pagination directly
-         * before the first work.
+         * Insert the copied pagination immediately
+         * before the results list.
          */
-        worksList.parentNode.insertBefore(
+        resultsList.parentNode.insertBefore(
             wrapper,
-            worksList
+            resultsList
         );
     }
 
@@ -170,17 +191,17 @@
         updating = true;
 
         try {
-            const worksList =
-                findWorksList();
+            const resultsList =
+                findResultsList();
 
-            if (!worksList) {
+            if (!resultsList) {
                 removeTopPagination();
                 return;
             }
 
             const originalPagination =
                 findOriginalPagination(
-                    worksList
+                    resultsList
                 );
 
             if (!originalPagination) {
@@ -194,13 +215,13 @@
                 );
 
             /*
-             * If our pagination is already directly
-             * before the works list, keep it.
+             * If our pagination is already immediately
+             * before the results list, leave it alone.
              */
             if (
                 existing &&
                 existing.nextElementSibling ===
-                    worksList
+                    resultsList
             ) {
                 return;
             }
@@ -209,7 +230,7 @@
 
             createTopPagination(
                 originalPagination,
-                worksList
+                resultsList
             );
 
         } finally {
@@ -218,17 +239,15 @@
     }
 
     // =========================================================
-    // DEBOUNCED UPDATE
+    // DEBOUNCE
     // =========================================================
 
     function scheduleUpdate() {
         clearTimeout(updateTimer);
 
         updateTimer = setTimeout(
-            () => {
-                updatePagination();
-            },
-            250
+            updatePagination,
+            200
         );
     }
 
@@ -237,49 +256,9 @@
     // =========================================================
 
     const observer =
-        new MutationObserver(
-            (mutations) => {
-
-                const relevant =
-                    mutations.some(
-                        (mutation) => {
-
-                            if (
-                                mutation.type !==
-                                'childList'
-                            ) {
-                                return false;
-                            }
-
-                            /*
-                             * Ignore mutations that only
-                             * happen inside our own copy.
-                             */
-                            const target =
-                                mutation.target;
-
-                            if (
-                                target instanceof
-                                Element &&
-                                target.closest(
-                                    `[${TOP_PAGINATION_MARKER}]`
-                                )
-                            ) {
-                                return false;
-                            }
-
-                            return (
-                                mutation.addedNodes.length > 0 ||
-                                mutation.removedNodes.length > 0
-                            );
-                        }
-                    );
-
-                if (relevant) {
-                    scheduleUpdate();
-                }
-            }
-        );
+        new MutationObserver(() => {
+            scheduleUpdate();
+        });
 
     observer.observe(
         document.body,
