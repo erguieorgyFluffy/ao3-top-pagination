@@ -13,6 +13,8 @@
 // @match        https://archiveofourown.org/bookmarks/search*
 // @grant        none
 // @run-at       document-idle
+// @updateURL    https://raw.githubusercontent.com/erguieorgyFluffy/ao3-top-pagination/main/ao3-top-pagination.user.js
+// @downloadURL  https://raw.githubusercontent.com/erguieorgyFluffy/ao3-top-pagination/main/ao3-top-pagination.user.js
 // ==/UserScript==
 
 (function () {
