@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         AO3 Top Pagination
+// @name         AO3 Top Pagination + Work Skin Edit Button
 // @namespace    http://tampermonkey.net/
-// @version      3.6
-// @description  Adds missing top pagination to AO3 result lists and keeps it synchronized with AO3's native pagination.
+// @version      4.0
+// @description  Adds missing top pagination to AO3 result lists and a convenient top Edit button to AO3 Work Skin pages.
 // @author       GPT-5.6 Luna
 // @match        https://archiveofourown.org/tags/*/works*
 // @match        https://archiveofourown.org/tags/*/works/*
@@ -11,6 +11,7 @@
 // @match        https://archiveofourown.org/works/search*
 // @match        https://archiveofourown.org/people/search*
 // @match        https://archiveofourown.org/bookmarks/search*
+// @match        https://archiveofourown.org/skins/*
 // @grant        none
 // @run-at       document-idle
 // @updateURL    https://raw.githubusercontent.com/erguieorgyFluffy/ao3-top-pagination/main/ao3-top-pagination.user.js
@@ -23,8 +24,13 @@
     const TOP_PAGINATION_ID = 'ao3-top-pagination';
     const TOP_PAGINATION_MARKER = 'data-ao3-top-pagination';
 
-    let updateTimer = null;
-    let updating = false;
+    const TOP_EDIT_ID = 'ao3-top-workskin-edit';
+
+    let paginationUpdateTimer = null;
+    let editUpdateTimer = null;
+
+    let updatingPagination = false;
+    let updatingEditButton = false;
 
     // =========================================================
     // FIND AO3 MAIN CONTENT
@@ -83,15 +89,15 @@
         /*
          * Do NOT depend on "pagy".
          *
-         * Your tag-page HTML currently has:
+         * Tag pages can have:
          *
          *   class="pagination actions pagy"
          *
-         * while the bookmark page has:
+         * while bookmark pages can have:
          *
          *   class="pagination actions"
          *
-         * Therefore we intentionally select the stable
+         * Therefore we intentionally use the stable
          * pagination/actions portion.
          */
 
@@ -103,7 +109,7 @@
     }
 
     // =========================================================
-    // IDENTIFY OUR OWN PAGINATION
+    // IDENTIFY OUR PAGINATION
     // =========================================================
 
     function isOurPagination(element) {
@@ -363,19 +369,6 @@
             return '';
         }
 
-        /*
-         * We compare the meaningful structure of the
-         * pagination.
-         *
-         * We deliberately ignore:
-         *
-         *   data-ao3-top-pagination
-         *   aria-label
-         *
-         * because those are intentionally different on our
-         * cloned version.
-         */
-
         function serialize(node) {
             /*
              * Text node.
@@ -584,15 +577,358 @@
     }
 
     // =========================================================
-    // MAIN UPDATE LOGIC
+    // WORK SKIN PAGE DETECTION
     // =========================================================
 
-    function updatePagination() {
-        if (updating) {
+    function isWorkSkinPage() {
+        const main = findMain();
+
+        if (!main) {
+            return false;
+        }
+
+        /*
+         * Individual AO3 skin display pages use:
+         *
+         *   <div id="main" class="skins-show ...">
+         *
+         * This excludes:
+         *
+         *   /skins/new
+         *   /skins/.../edit
+         *   My Work Skins
+         *   My Site Skins
+         */
+        return main.classList.contains(
+            'skins-show'
+        );
+    }
+
+    // =========================================================
+    // FIND THE ACTUAL WORK SKIN EDIT LINK
+    // =========================================================
+
+    function findWorkSkinEditLink() {
+        const main = findMain();
+
+        if (!main) {
+            return null;
+        }
+
+        /*
+         * Search all links rather than relying on a particular
+         * surrounding <ul>, because AO3's markup can change
+         * without changing the actual Edit URL.
+         *
+         * We require:
+         *
+         *   /skins/<numeric-id>/edit
+         *
+         * and require it to be same-origin.
+         */
+        const links =
+            Array.from(
+                main.querySelectorAll(
+                    'a[href]'
+                )
+            );
+
+        for (
+            const link
+            of links
+        ) {
+            let url;
+
+            try {
+                url = new URL(
+                    link.href,
+                    window.location.origin
+                );
+            } catch (error) {
+                continue;
+            }
+
+            if (
+                url.origin !==
+                window.location.origin
+            ) {
+                continue;
+            }
+
+            if (
+                /^\/skins\/\d+\/edit\/?$/.test(
+                    url.pathname
+                )
+            ) {
+                return link;
+            }
+        }
+
+        return null;
+    }
+
+    // =========================================================
+    // FIND OUR WORK SKIN EDIT BUTTON
+    // =========================================================
+
+    function findOurWorkSkinEditButton() {
+        return document.getElementById(
+            TOP_EDIT_ID
+        );
+    }
+
+    // =========================================================
+    // REMOVE OUR WORK SKIN EDIT BUTTON
+    // =========================================================
+
+    function removeWorkSkinEditButton() {
+        const existing =
+            findOurWorkSkinEditButton();
+
+        if (existing) {
+            existing.remove();
+        }
+    }
+
+    // =========================================================
+    // CHECK WORK SKIN EDIT BUTTON POSITION
+    // =========================================================
+
+    function isWorkSkinEditButtonCorrectlyPositioned(
+        button,
+        header
+    ) {
+        if (
+            !button ||
+            !header
+        ) {
+            return false;
+        }
+
+        return (
+            button.parentNode ===
+                header.parentNode &&
+            button.previousElementSibling ===
+                header
+        );
+    }
+
+    // =========================================================
+    // CREATE WORK SKIN EDIT BUTTON
+    // =========================================================
+
+    function createWorkSkinEditButton() {
+        const main = findMain();
+
+        if (!main) {
             return;
         }
 
-        updating = true;
+        if (!isWorkSkinPage()) {
+            return;
+        }
+
+        /*
+         * Don't create duplicates.
+         */
+        if (
+            findOurWorkSkinEditButton()
+        ) {
+            return;
+        }
+
+        /*
+         * Use AO3's actual Edit link.
+         *
+         * If there is no Edit link, the current user does
+         * not have an Edit action available, so nothing is
+         * added.
+         */
+        const editLink =
+            findWorkSkinEditLink();
+
+        if (!editLink) {
+            return;
+        }
+
+        /*
+         * Find AO3's skin header.
+         */
+        const header =
+            main.querySelector(
+                '.primary.header.module'
+            );
+
+        if (!header) {
+            return;
+        }
+
+        /*
+         * Create a normal AO3 action list.
+         */
+        const wrapper =
+            document.createElement('ul');
+
+        wrapper.id =
+            TOP_EDIT_ID;
+
+        wrapper.className =
+            'actions';
+
+        /*
+         * Sticky positioning keeps Edit available while
+         * scrolling through thousands of lines of CSS.
+         *
+         * No forced background color is used, so this won't
+         * create a white bar on dark/custom AO3 themes.
+         */
+        wrapper.style.cssText = [
+            'position: sticky',
+            'top: 10px',
+            'z-index: 1000',
+            'margin: 0 0 1em 0',
+            'padding: 0.5em 0',
+            'box-sizing: border-box'
+        ].join(';');
+
+        /*
+         * Clone AO3's actual Edit link.
+         */
+        const li =
+            document.createElement('li');
+
+        const clone =
+            editLink.cloneNode(true);
+
+        /*
+         * Avoid duplicate IDs.
+         */
+        clone.removeAttribute('id');
+
+        li.appendChild(clone);
+        wrapper.appendChild(li);
+
+        /*
+         * Place immediately below the skin header.
+         */
+        header.insertAdjacentElement(
+            'afterend',
+            wrapper
+        );
+    }
+
+    // =========================================================
+    // UPDATE WORK SKIN EDIT BUTTON
+    // =========================================================
+
+    function updateWorkSkinEditButton() {
+        if (updatingEditButton) {
+            return;
+        }
+
+        updatingEditButton = true;
+
+        try {
+            /*
+             * Not an individual Work Skin page.
+             */
+            if (!isWorkSkinPage()) {
+                removeWorkSkinEditButton();
+                return;
+            }
+
+            const header =
+                findMain()?.querySelector(
+                    '.primary.header.module'
+                );
+
+            if (!header) {
+                removeWorkSkinEditButton();
+                return;
+            }
+
+            const editLink =
+                findWorkSkinEditLink();
+
+            /*
+             * No actual Edit link means the user cannot edit
+             * this skin, so remove any stale copy.
+             */
+            if (!editLink) {
+                removeWorkSkinEditButton();
+                return;
+            }
+
+            let existing =
+                findOurWorkSkinEditButton();
+
+            /*
+             * Create if missing.
+             */
+            if (!existing) {
+                createWorkSkinEditButton();
+                return;
+            }
+
+            /*
+             * If AO3 moved/rebuilt the header, put our button
+             * back in the correct place.
+             */
+            if (
+                !isWorkSkinEditButtonCorrectlyPositioned(
+                    existing,
+                    header
+                )
+            ) {
+                existing.remove();
+
+                createWorkSkinEditButton();
+                return;
+            }
+
+            const ourLink =
+                existing.querySelector(
+                    'a'
+                );
+
+            /*
+             * Something removed/replaced our copied link.
+             */
+            if (!ourLink) {
+                existing.remove();
+
+                createWorkSkinEditButton();
+                return;
+            }
+
+            /*
+             * Keep the copied URL synchronized with AO3's
+             * actual Edit link.
+             */
+            if (
+                ourLink.href !==
+                editLink.href
+            ) {
+                existing.remove();
+
+                createWorkSkinEditButton();
+            }
+
+        } finally {
+            updatingEditButton = false;
+        }
+    }
+
+    // =========================================================
+    // PAGINATION UPDATE
+    // =========================================================
+
+    function updatePagination() {
+        if (updatingPagination) {
+            return;
+        }
+
+        updatingPagination = true;
 
         try {
             const resultsList =
@@ -710,29 +1046,101 @@
             // No native bottom.
             //
             // There is no valid AO3 pagination source.
-            //
-            // Remove any old clone so stale page links
-            // cannot survive an AO3 result update.
             // -------------------------------------------------
 
             removeOurTopPagination();
 
         } finally {
-            updating = false;
+            updatingPagination = false;
         }
     }
 
     // =========================================================
-    // DEBOUNCE
+    // DEBOUNCE PAGINATION
     // =========================================================
 
-    function scheduleUpdate() {
-        clearTimeout(updateTimer);
-
-        updateTimer = setTimeout(
-            updatePagination,
-            200
+    function schedulePaginationUpdate() {
+        clearTimeout(
+            paginationUpdateTimer
         );
+
+        paginationUpdateTimer =
+            setTimeout(
+                updatePagination,
+                200
+            );
+    }
+
+    // =========================================================
+    // DEBOUNCE EDIT BUTTON
+    // =========================================================
+
+    function scheduleEditUpdate() {
+        clearTimeout(
+            editUpdateTimer
+        );
+
+        editUpdateTimer =
+            setTimeout(
+                updateWorkSkinEditButton,
+                200
+            );
+    }
+
+    // =========================================================
+    // MUTATION HELPERS
+    // =========================================================
+
+    function mutationIsInsideOurElements(mutation) {
+        /*
+         * Ignore mutations whose target is our own injected
+         * pagination or Edit button.
+         *
+         * This prevents our own DOM changes from needlessly
+         * triggering another complete update cycle.
+         */
+
+        if (
+            mutation.target instanceof Element &&
+            (
+                mutation.target.closest(
+                    `#${TOP_PAGINATION_ID}`
+                ) ||
+                mutation.target.closest(
+                    `#${TOP_EDIT_ID}`
+                )
+            )
+        ) {
+            return true;
+        }
+
+        /*
+         * Also check added nodes. This catches mutations
+         * where AO3 inserts/replaces something containing
+         * one of our generated elements.
+         */
+        for (
+            const node
+            of mutation.addedNodes
+        ) {
+            if (
+                node instanceof Element &&
+                (
+                    node.id === TOP_PAGINATION_ID ||
+                    node.id === TOP_EDIT_ID ||
+                    node.closest(
+                        `#${TOP_PAGINATION_ID}`
+                    ) ||
+                    node.closest(
+                        `#${TOP_EDIT_ID}`
+                    )
+                )
+            ) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     // =========================================================
@@ -740,9 +1148,38 @@
     // =========================================================
 
     const observer =
-        new MutationObserver(() => {
-            scheduleUpdate();
-        });
+        new MutationObserver(
+            (mutations) => {
+                let relevantChange = false;
+
+                for (
+                    const mutation
+                    of mutations
+                ) {
+                    if (
+                        mutationIsInsideOurElements(
+                            mutation
+                        )
+                    ) {
+                        continue;
+                    }
+
+                    relevantChange = true;
+                    break;
+                }
+
+                if (!relevantChange) {
+                    return;
+                }
+
+                /*
+                 * Pagination and Work Skin handling are
+                 * scheduled independently.
+                 */
+                schedulePaginationUpdate();
+                scheduleEditUpdate();
+            }
+        );
 
     observer.observe(
         document.body,
@@ -774,8 +1211,7 @@
             subtree: true,
 
             /*
-             * Only attribute changes that can affect
-             * pagination or its structure.
+             * Only attributes relevant to the two features.
              */
             attributeFilter: [
                 'href',
@@ -791,5 +1227,6 @@
     // =========================================================
 
     updatePagination();
+    updateWorkSkinEditButton();
 
 })();
